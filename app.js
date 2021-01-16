@@ -8,6 +8,7 @@ const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const findOrCreate = require('mongoose-findorcreate');
+const GitHubStrategy = require('passport-github').Strategy;
 
 const app = express();
 
@@ -36,7 +37,9 @@ mongoose.set("useCreateIndex", true);
 const userSchema = new mongoose.Schema({
     email: String,
     password: String,
-    googleId: String
+    googleId: String,
+    githubId:String,
+    secret: String
 });
 
 userSchema.plugin(passportLocalMongoose);
@@ -46,13 +49,13 @@ const User = new mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());
 
-passport.serializeUser(function(user, cb) {
+passport.serializeUser(function (user, cb) {
     cb(null, user);
-  });
-  
-  passport.deserializeUser(function(obj, cb) {
+});
+
+passport.deserializeUser(function (obj, cb) {
     cb(null, obj);
-  });
+});
 
 passport.use(new GoogleStrategy({
         clientID: process.env.CLIENT_ID,
@@ -70,12 +73,28 @@ passport.use(new GoogleStrategy({
     }
 ));
 
+passport.use(new GitHubStrategy({
+        clientID: process.env.GITHUB_CLIENT_ID,
+        clientSecret: process.env.GITHUB_CLIENT_SECRET,
+        callbackURL: "http://localhost:3000/auth/github/secrets"
+    },
+    function (accessToken, refreshToken, profile, cb) {
+        User.findOrCreate({
+            githubId: profile.id
+        }, function (err, user) {
+            return cb(err, user);
+        });
+    }
+));
+
 app.get("/", function (req, res) {
     res.render("home");
 });
 
 app.get('/auth/google',
-    passport.authenticate('google', {scope: ['profile']})
+    passport.authenticate('google', {
+        scope: ['profile']
+    })
 );
 
 app.get('/auth/google/secrets',
@@ -88,6 +107,18 @@ app.get('/auth/google/secrets',
     }
 );
 
+app.get('/auth/github',
+    passport.authenticate('github'));
+
+app.get('/auth/github/secrets',
+    passport.authenticate('github', {
+        failureRedirect: '/login'
+    }),
+    function (req, res) {
+        // Successful authentication, redirect secrets.
+        res.redirect('/secrets');
+    });
+
 app.get("/login", function (req, res) {
     res.render("login");
 });
@@ -98,15 +129,54 @@ app.get("/register", function (req, res) {
 
 app.get("/secrets", function (req, res) {
     if (req.isAuthenticated()) {
-        res.render("secrets");
+        User.find({
+            "secret": {
+                $ne: null
+            }
+        }, function (err, foundUsers) {
+            if (err) {
+                console.log(err);
+            } else {
+                if (foundUsers) {
+                    res.render("secrets", {
+                        usersWithSecrets: foundUsers
+                    });
+                }
+            }
+        });
     } else {
         res.redirect("/login")
+    }
+});
+
+app.get("/submit", function (req, res) {
+    if (req.isAuthenticated()) {
+        res.render("submit");
+    } else {
+        res.redirect("/login");
     }
 });
 
 app.get("/logout", function (req, res) {
     req.logout();
     res.redirect("/");
+});
+
+app.post("/submit", function (req, res) {
+    const submittedSecret = req.body.secret;
+
+    User.findById(req.user._id, function (err, foundUser) {
+        if (err) {
+            console.log(err);
+        } else {
+            if (foundUser) {
+                foundUser.secret = submittedSecret;
+                foundUser.save(function () {
+                    res.redirect("/secrets")
+                });
+            }
+        }
+    });
 });
 
 app.post("/register", function (req, res) {
